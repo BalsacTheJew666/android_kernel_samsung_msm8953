@@ -1,0 +1,196 @@
+name: Build Kernel (j7popltespr, MSM8953)
+
+on:
+  push:
+    branches:
+      - "ksu-next-j7popltespr"
+  workflow_dispatch:
+    inputs:
+      toolchain_url:
+        description: 'Optional: URL to a prebuilt aarch64 toolchain tarball (tar.xz). If empty, apt\'s cross gcc is used.'
+        required: false
+        default: ''
+      kernel_defconfig:
+        description: 'Defconfig name to use (in arch/arm64/configs/)'
+        required: true
+        default: 'j7popltespr_defconfig'
+      mkbootimg_path:
+        description: 'Optional path to mkbootimg binary (if provided, boot.img repack step runs)'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      ARCH: arm64
+      O_DIR: out
+      OUT_ARTIFACT_DIR: artifacts
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install packages (build deps)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libncurses5-dev libssl-dev \
+            libelf-dev dwarves ccache unzip wget git python3-pip zip \
+            git-lfs file
+          # fallback cross compiler available from apt if TOOLCHAIN_URL not provided
+          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu
+
+      - name: Setup ccache
+        run: |
+          mkdir -p ~/.cache/ccache
+          export CCACHE_DIR=~/.cache/ccache
+          ccache --max-size=1G || true
+
+      - name: Prepare toolchain (optional)
+        id: toolchain
+        run: |
+          set -euo pipefail
+          if [ "x${{ github.event.inputs.toolchain_url }}" != "x" ]; then
+            echo "Toolchain URL provided, downloading..."
+            mkdir -p toolchain
+            curl -L --retry 5 "${{ github.event.inputs.toolchain_url }}" -o toolchain/toolchain.tar.xz
+            tar -xJf toolchain/toolchain.tar.xz -C toolchain
+            # Find bin dir with aarch64 toolchain
+            TOOL_BIN=$(find toolchain -type d -name "*bin" | grep -E "aarch64|arm64" | head -n1 || true)
+            if [ -z "$TOOL_BIN" ]; then
+              # fallback: find any bin
+              TOOL_BIN=$(find toolchain -type d -name "bin" | head -n1)
+            fi
+            if [ -z "$TOOL_BIN" ]; then
+              echo "::error::Failed to locate toolchain bin directory"
+              exit 1
+            fi
+            echo "toolchain_bin=$TOOL_BIN" >> $GITHUB_OUTPUT
+            echo "Using downloaded toolchain at $TOOL_BIN"
+            # Export CROSS_COMPILE to be used by later steps
+            echo "CROSS_PREFIX=$(basename $(ls $TOOL_BIN | grep 'aarch64' | head -n1) | sed 's/-gcc$//')" >> $GITHUB_ENV || true
+            echo "CROSS_BIN=$TOOL_BIN" >> $GITHUB_ENV
+          else
+            echo "No toolchain_url provided, will use system cross compiler (aarch64-linux-gnu-)"
+            echo "CROSS_BIN=/usr/bin" >> $GITHUB_ENV
+            echo "CROSS_PREFIX=aarch64-linux-gnu-" >> $GITHUB_ENV
+          fi
+
+      - name: Show cross-compiler
+        run: |
+          echo "CROSS_BIN=$CROSS_BIN"
+          echo "CROSS_PREFIX=$CROSS_PREFIX"
+          if [ -x "${CROSS_BIN}/${CROSS_PREFIX}gcc" ]; then
+            "${CROSS_BIN}/${CROSS_PREFIX}gcc" --version || true
+          else
+            which "${CROSS_PREFIX}gcc" || true
+            "${CROSS_PREFIX}gcc" --version || true
+          fi
+        env:
+          CROSS_BIN: ${{ env.CROSS_BIN }}
+          CROSS_PREFIX: ${{ env.CROSS_PREFIX }}
+
+      - name: Export CROSS_COMPILE for make
+        run: |
+          # prefer downloaded toolchain if present
+          if [ -n "${CROSS_BIN}" ] && [ -x "${CROSS_BIN}/${CROSS_PREFIX}gcc" ]; then
+            echo "Using toolchain at ${CROSS_BIN} with prefix ${CROSS_PREFIX}"
+            echo "CROSS_COMPILE=${CROSS_BIN%/}/${CROSS_PREFIX}" >> $GITHUB_ENV
+          else
+            echo "Using system cross prefix ${CROSS_PREFIX}"
+            echo "CROSS_COMPILE=${CROSS_PREFIX}" >> $GITHUB_ENV
+          fi
+
+      - name: Configure kernel (defconfig)
+        run: |
+          set -euo pipefail
+          mkdir -p ${O_DIR}
+          export ARCH=${{ env.ARCH }}
+          export CROSS_COMPILE=${CROSS_COMPILE}
+          make ARCH=${ARCH} O=${O_DIR} ${ { github.event.inputs.kernel_defconfig || 'j7popltespr_defconfig' } }
+        env:
+          CROSS_COMPILE: ${{ env.CROSS_COMPILE }}
+
+      - name: Build kernel + dtbs + modules
+        run: |
+          set -euo pipefail
+          export ARCH=${{ env.ARCH }}
+          export CROSS_COMPILE=${CROSS_COMPILE}
+          make -C . O=${O_DIR} ARCH=${ARCH} -j$(nproc)  # builds vmlinux, Image, dtbs
+          # build modules (if any)
+          make -C . O=${O_DIR} ARCH=${ARCH} modules -j$(nproc) || true
+          # install modules into a bundle directory for artifact packaging
+          mkdir -p ${O_DIR}/modules_install
+          make -C . O=${O_DIR} ARCH=${ARCH} INSTALL_MOD_PATH=${PWD}/${O_DIR}/modules_install modules_install || true
+        env:
+          CROSS_COMPILE: ${{ env.CROSS_COMPILE }}
+
+      - name: Collect kernel outputs & package
+        run: |
+          set -euo pipefail
+          mkdir -p ${OUT_ARTIFACT_DIR}
+          # Prefer Image.gz-dtb (if build produced appended dtb)
+          if [ -f ${O_DIR}/arch/arm64/boot/Image.gz-dtb ]; then
+            cp -v ${O_DIR}/arch/arm64/boot/Image.gz-dtb ${OUT_ARTIFACT_DIR}/ || true
+          fi
+          # zImage/Image
+          cp -v ${O_DIR}/arch/arm64/boot/Image ${OUT_ARTIFACT_DIR}/ 2>/dev/null || true
+          cp -v ${O_DIR}/arch/arm64/boot/zImage ${OUT_ARTIFACT_DIR}/ 2>/dev/null || true
+          # dtb(s)
+          mkdir -p ${OUT_ARTIFACT_DIR}/dtbs
+          cp -v ${O_DIR}/arch/arm64/boot/dts/*.dtb ${OUT_ARTIFACT_DIR}/dtbs/ 2>/dev/null || true
+          cp -v ${O_DIR}/arch/arm64/boot/dts/*/*.dtb ${OUT_ARTIFACT_DIR}/dtbs/ 2>/dev/null || true
+          # modules tarball (if any)
+          if [ -d ${O_DIR}/modules_install/lib/modules ]; then
+            tar -C ${O_DIR}/modules_install -czf ${OUT_ARTIFACT_DIR}/modules.tar.gz lib/modules || true
+          fi
+          # package the full out tree for inspection
+          tar -C ${O_DIR} -czf ${OUT_ARTIFACT_DIR}/out-tree.tar.gz . || true
+          ls -la ${OUT_ARTIFACT_DIR} || true
+
+      - name: Optional: Repack boot.img (requires mkbootimg + ramdisk)
+        if: ${{ github.event.inputs.mkbootimg_path != '' }}
+        run: |
+          set -euo pipefail
+          MKBOOTIMG="${{ github.event.inputs.mkbootimg_path }}"
+          if [ ! -x "$MKBOOTIMG" ]; then
+            echo "::error::mkbootimg not found or not executable at $MKBOOTIMG"
+            exit 1
+          fi
+          # We need a ramdisk. You must provide a ramdisk cpio (ramdisk.cpio.gz) in the repo
+          # at path ramdisk/ramdisk.cpio.gz or adjust path here.
+          if [ ! -f ramdisk/ramdisk.cpio.gz ]; then
+            echo "::error::Please add a ramdisk cpio at ramdisk/ramdisk.cpio.gz in the repo to enable boot.img repack."
+            exit 1
+          fi
+          mkdir -p repack
+          # choose kernel blob: prefer Image.gz-dtb, else Image + dtb
+          if [ -f ${O_DIR}/arch/arm64/boot/Image.gz-dtb ]; then
+            KERNEL_BLOB=${O_DIR}/arch/arm64/boot/Image.gz-dtb
+            cp $KERNEL_BLOB repack/kernel
+          else
+            # some older flows expect zImage; fallback to Image
+            if [ -f ${O_DIR}/arch/arm64/boot/zImage ]; then
+              cp ${O_DIR}/arch/arm64/boot/zImage repack/kernel
+            elif [ -f ${O_DIR}/arch/arm64/boot/Image ]; then
+              gzip -c ${O_DIR}/arch/arm64/boot/Image > repack/kernel.gz
+              mv repack/kernel.gz repack/kernel
+            else
+              echo "::error::No kernel image found to repack"
+              exit 1
+            fi
+          fi
+          cp ramdisk/ramdisk.cpio.gz repack/ramdisk.cpio.gz
+          # default cmdline (adjust if needed)
+          CMDLINE="console=ttyHSL0,115200,n8"
+          # create boot.img
+          $MKBOOTIMG --kernel repack/kernel --ramdisk repack/ramdisk.cpio.gz --cmdline "$CMDLINE" --output ${OUT_ARTIFACT_DIR}/boot-repack.img || true
+          ls -l ${OUT_ARTIFACT_DIR}/boot-repack.img || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-j7popltespr-${{ github.run_id }}
+          path: ${OUT_ARTIFACT_DIR}
