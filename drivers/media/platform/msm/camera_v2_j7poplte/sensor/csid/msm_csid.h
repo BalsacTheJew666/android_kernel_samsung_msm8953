@@ -18,6 +18,7 @@
 #include <linux/platform_device.h>
 #include <media/v4l2-subdev.h>
 #include "../../include/media/msm_cam_sensor.h"
+#include "../../include/soc/qcom/camera2.h"
 #include "msm_sd.h"
 
 #define CSID_NUM_CLK_MAX  16
