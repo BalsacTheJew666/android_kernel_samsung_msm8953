@@ -66,8 +66,7 @@
 #undef CDBG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
 
-static struct msm_cam_clk_info csid_clk_info[CSID_NUM_CLK_MAX];
-static struct msm_cam_clk_info csid_clk_src_info[CSID_NUM_CLK_MAX];
+/* Per-CSID clock arrays are members of struct csid_device. */
 
 static struct camera_vreg_t csid_vreg_info[] = {
 	{"qcom,mipi-csi-vdd", 0, 0, 12000},
@@ -546,11 +545,11 @@ static int msm_csid_init(struct csid_device *csid_dev, uint32_t *csid_version)
 
 	if (csid_dev->ctrl_reg->csid_reg.csid_version == CSID_VERSION_V22)
 		msm_cam_clk_sel_src(&csid_dev->pdev->dev,
-			&csid_clk_info[3], csid_clk_src_info,
+			&csid_dev->csid_clk_info[3], csid_dev->csid_clk_src_info,
 			csid_dev->num_clk_src_info);
 
 	rc = msm_cam_clk_enable(&csid_dev->pdev->dev,
-			csid_clk_info, csid_dev->csid_clk,
+			csid_dev->csid_clk_info, csid_dev->csid_clk,
 			csid_dev->num_clk, 1);
 	if (rc < 0) {
 		pr_err("J727P_CSID_CLOCK_FAIL: %s:%d errno=%d\n",
@@ -583,7 +582,7 @@ static int msm_csid_init(struct csid_device *csid_dev, uint32_t *csid_version)
 
 msm_csid_reset_fail:
 	disable_irq(csid_dev->irq->start);
-	msm_cam_clk_enable(&csid_dev->pdev->dev, csid_clk_info,
+	msm_cam_clk_enable(&csid_dev->pdev->dev, csid_dev->csid_clk_info,
 		csid_dev->csid_clk, csid_dev->num_clk, 0);
 clk_enable_failed:
 	if (csid_dev->ctrl_reg->csid_reg.csid_version < CSID_VERSION_V22) {
@@ -646,7 +645,7 @@ static int msm_csid_release(struct csid_device *csid_dev)
 	disable_irq(csid_dev->irq->start);
 
 	if (csid_dev->hw_version == CSID_VERSION_V20) {
-		msm_cam_clk_enable(&csid_dev->pdev->dev, csid_clk_info,
+		msm_cam_clk_enable(&csid_dev->pdev->dev, csid_dev->csid_clk_info,
 			csid_dev->csid_clk, csid_dev->num_clk, 0);
 
 		msm_camera_enable_vreg(&csid_dev->pdev->dev,
@@ -658,7 +657,7 @@ static int msm_csid_release(struct csid_device *csid_dev)
 			NULL, 0, &csid_dev->csi_vdd, 0);
 	} else {
 		msm_cam_clk_enable(&csid_dev->pdev->dev,
-			csid_clk_info,
+			csid_dev->csid_clk_info,
 			csid_dev->csid_clk,
 			csid_dev->num_clk, 0);
 
@@ -1061,9 +1060,9 @@ static int msm_csid_get_clk_info(struct csid_device *csid_dev,
 
 	for (i = 0; i < count; i++) {
 		rc = of_property_read_string_index(of_node, "clock-names",
-				i, &(csid_clk_info[i].clk_name));
+				i, &(csid_dev->csid_clk_info[i].clk_name));
 		CDBG("%s: clock-names[%d] = %s\n", __func__,
-			i, csid_clk_info[i].clk_name);
+			i, csid_dev->csid_clk_info[i].clk_name);
 		if (rc < 0) {
 			pr_err("%s:%d, failed\n", __func__, __LINE__);
 			return rc;
@@ -1076,16 +1075,16 @@ static int msm_csid_get_clk_info(struct csid_device *csid_dev,
 		return rc;
 	}
 	for (i = 0; i < count; i++) {
-		csid_clk_info[i].clk_rate = (rates[i] == 0) ?
+		csid_dev->csid_clk_info[i].clk_rate = (rates[i] == 0) ?
 			(long)-1 : rates[i];
-		if (!strcmp(csid_clk_info[i].clk_name, "csi_src_clk")) {
+		if (!strcmp(csid_dev->csid_clk_info[i].clk_name, "csi_src_clk")) {
 			CDBG("%s:%d, copy csi_src_clk",
 				__func__, __LINE__);
 			csid_dev->csid_max_clk = rates[i];
 			csid_dev->csid_clk_index = i;
 		}
 		CDBG("%s: clk_rate[%d] = %ld\n", __func__, i,
-			csid_clk_info[i].clk_rate);
+			csid_dev->csid_clk_info[i].clk_rate);
 	}
 
 	if (csid_dev->hw_dts_version == CSID_VERSION_V22) {
@@ -1096,9 +1095,9 @@ static int msm_csid_get_clk_info(struct csid_device *csid_dev,
 			ii++;
 			rc = of_property_read_string_index(of_node,
 				"clock-names", i,
-				&(csid_clk_src_info[ii].clk_name));
+				&(csid_dev->csid_clk_src_info[ii].clk_name));
 			CDBG("%s: clock-names[%d] = %s\n", __func__,
-				ii, csid_clk_src_info[ii].clk_name);
+				ii, csid_dev->csid_clk_src_info[ii].clk_name);
 			if (rc < 0) {
 				pr_err("%s:%d, failed\n", __func__, __LINE__);
 				return rc;
@@ -1113,9 +1112,9 @@ static int msm_csid_get_clk_info(struct csid_device *csid_dev,
 		}
 		for (i = count; i < cnt; i++) {
 			ii++;
-			csid_clk_src_info[ii].clk_rate = rates[i];
+			csid_dev->csid_clk_src_info[ii].clk_rate = rates[i];
 			CDBG("%s: clk_rate[%d] = %ld\n", __func__, ii,
-			csid_clk_src_info[ii].clk_rate);
+			csid_dev->csid_clk_src_info[ii].clk_rate);
 		}
 	}
 	return 0;
