@@ -294,7 +294,9 @@ int msm_cam_clk_enable(struct device *dev, struct msm_cam_clk_info *clk_info,
 			CDBG("%s enable %s\n", __func__, clk_info[i].clk_name);
 			clk_ptr[i] = clk_get(dev, clk_info[i].clk_name);
 			if (IS_ERR(clk_ptr[i])) {
-				pr_err("%s get failed\n", clk_info[i].clk_name);
+				pr_err("%s: clock %s get failed: %ld\n",
+					__func__, clk_info[i].clk_name,
+					PTR_ERR(clk_ptr[i]));
 				rc = PTR_ERR(clk_ptr[i]);
 				goto cam_clk_get_err;
 			}
