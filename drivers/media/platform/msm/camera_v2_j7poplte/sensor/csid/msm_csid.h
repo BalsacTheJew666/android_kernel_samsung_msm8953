@@ -104,6 +104,9 @@ struct csid_device {
 	uint32_t num_clk_src_info;
 	struct regulator *reg_ptr;
 	struct clk *csid_clk[CSID_NUM_CLK_MAX];
+	/* Clock settings belong to each CSID, not a shared global table. */
+	struct msm_cam_clk_info csid_clk_info[CSID_NUM_CLK_MAX];
+	struct msm_cam_clk_info csid_clk_src_info[CSID_NUM_CLK_MAX];
 	uint32_t csid_clk_index;
 	uint32_t csid_max_clk;
 	uint32_t csid_3p_enabled;
