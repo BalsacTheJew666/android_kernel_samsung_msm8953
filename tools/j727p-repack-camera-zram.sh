@@ -13,7 +13,10 @@ DTB_SHA=dba2efdf760f9ba305f572171722b774911047e5748187db65026bf718489779
 RAMDISK_SHA=270047fe7ded50ea38d629e9d7c1fa0c12d58463a68dc7b587f07c689420d950
 
 die() { echo "STOP: $*" >&2; exit 1; }
-hash() { sha256sum "$1" | cut -d ' ' -f 1; }
+sha_file() {
+ DIGEST_LINE="$(sha256sum "$1")" || return 1
+ printf '%s\n' "${DIGEST_LINE%% *}"
+}
 
 [ "$(id -u)" = 0 ] || die "Run with su -c."
 [ -f "$ART" ] || die "Pass path to downloaded j727p-zram-camera-v2-3.zip"
@@ -25,7 +28,7 @@ for CANDIDATE in \
  /data/local/tmp/j727p-v2-repack-19639/new-boot.img
 do
  [ -f "$CANDIDATE" ] || continue
- ACTUAL="$(hash "$CANDIDATE")" || die "Cannot hash $CANDIDATE"
+ ACTUAL="$(sha_file "$CANDIDATE")" || die "Cannot hash $CANDIDATE"
  SIZE="$(wc -c < "$CANDIDATE")" || die "Cannot check size: $CANDIDATE"
  if [ "$ACTUAL" = "$BASE_SHA" ] && [ "$SIZE" -eq 33554432 ]; then
   BASE="$CANDIDATE"
@@ -49,22 +52,26 @@ trap 'rm -rf "$W"' EXIT
 
 echo "===== EXTRACT VERIFIED GITHUB ACTIONS IMAGE ====="
 "$UNZIP" -p "$ART" Image.gz-dtb > "$W/Image.gz-dtb" || die "Unable to extract kernel"
-[ "$(hash "$W/Image.gz-dtb")" = "$IMAGE_SHA" ] || die "Wrong/altered camera-repair kernel artifact"
+[ "$(sha_file "$W/Image.gz-dtb")" = "$IMAGE_SHA" ] || die "Wrong/altered camera-repair kernel artifact"
 
-echo "===== SPLIT NEW KERNEL AND DEVICE TREES ====="
-cd "$W/split"
-"$M" split -n "$W/Image.gz-dtb" || die "MagiskBoot cannot split Image.gz-dtb"
-[ -f kernel ] && [ -f kernel_dtb ] || die "Split did not produce kernel + kernel_dtb"
-[ "$(hash kernel)" = "$KERNEL_SHA" ] || die "Unexpected new kernel payload"
-echo "New kernel SHA256: $(hash kernel)"
-echo "Artifact DTB SHA256: $(hash kernel_dtb)"
+echo "===== SPLIT VERIFIED KERNEL FROM APPENDED DTBS ====="
+# This exact CI artifact was inspected: gzip kernel 11000154 bytes,
+# six concatenated DTBs 1544147 bytes. Both segments are hash-pinned.
+[ "$(wc -c < "$W/Image.gz-dtb")" -eq 12544301 ] || die "Unexpected compiled kernel+DTB length"
+dd if="$W/Image.gz-dtb" of="$W/split/kernel" bs=11000154 count=1 2>/dev/null || die "Could not extract gzip kernel"
+dd if="$W/Image.gz-dtb" of="$W/split/kernel_dtb" bs=11000154 skip=1 2>/dev/null || die "Could not extract appended DTBs"
+[ "$(sha_file "$W/split/kernel")" = "$KERNEL_SHA" ] || die "Unexpected new gzip kernel checksum"
+[ "$(wc -c < "$W/split/kernel_dtb")" -eq 1544147 ] || die "Wrong appended DTB length"
+[ "$(sha_file "$W/split/kernel_dtb")" = "bd43c6a38e592df361a8610ac7ea73dd8d6efbf3935d3c8714fb2369a5745542" ] || die "Artifact device-tree checksum mismatch"
+echo "New gzip kernel SHA256: $(sha_file "$W/split/kernel")"
+echo "Artifact DTB SHA256: $(sha_file "$W/split/kernel_dtb")"
 
 echo "===== UNPACK KNOWN-GOOD CAMERA BOOT ====="
 cd "$W/repack"
 "$M" unpack -n -h "$BASE" || die "Could not unpack original boot"
 [ -f kernel_dtb ] && [ -f ramdisk.cpio ] || die "Missing known-good boot components"
-[ "$(hash kernel_dtb)" = "$DTB_SHA" ] || die "Known-good device tree does not match"
-[ "$(hash ramdisk.cpio)" = "$RAMDISK_SHA" ] || die "Known-good ramdisk does not match"
+[ "$(sha_file kernel_dtb)" = "$DTB_SHA" ] || die "Known-good device tree does not match"
+[ "$(sha_file ramdisk.cpio)" = "$RAMDISK_SHA" ] || die "Known-good ramdisk does not match"
 
 # Replace ONLY the compressed kernel. Keep current camera DTB and Magisk ramdisk.
 cp "$W/split/kernel" "$W/repack/kernel"
@@ -86,7 +93,7 @@ chmod 0644 "$OUT"
 echo "===== SUCCESS ====="
 echo "Created: $OUT"
 echo "Size: $(wc -c < "$OUT") bytes"
-echo "SHA256: $(hash "$OUT")"
+echo "SHA256: $(sha_file "$OUT")"
 echo "Kernel: new ZRAM + camera clock repair"
 echo "Device tree: original known-good camera DTB"
 echo "Ramdisk/header: based on original known-good Magisk boot"
