@@ -1,0 +1,64 @@
+name: J727P camera clock errno diagnostic
+
+on:
+  push:
+    branches:
+      - j727p-camera-clock-errno-diagnostic
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout exact diagnostic source
+        uses: actions/checkout@v4
+
+      - name: Install build requirements
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential bc bison flex libssl-dev libelf-dev git file python3
+
+      - name: Fetch Android 9 GCC 4.9 toolchains
+        run: |
+          set -eux
+          git clone --depth 1 --branch pie-platform-release https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc64
+          git clone --depth 1 --branch pie-platform-release https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 gcc32
+          ./gcc64/bin/aarch64-linux-android-gcc --version | head -n 1
+          ./gcc32/bin/arm-linux-androideabi-gcc --version | head -n 1
+
+      - name: Compile with correct Sprint J7 camera clock diagnostics
+        shell: bash
+        run: |
+          set -eo pipefail
+          mkdir -p out ci-results
+          export ARCH=arm64
+          export CROSS_COMPILE="$GITHUB_WORKSPACE/gcc64/bin/aarch64-linux-android-"
+          export CROSS_COMPILE_ARM32="$GITHUB_WORKSPACE/gcc32/bin/arm-linux-androideabi-"
+          export KBUILD_BUILD_USER=github-actions
+          export KBUILD_BUILD_HOST=j727p-camera-errno
+          export HOST_EXTRACFLAGS=-fcommon
+          git rev-parse HEAD > ci-results/commit.txt
+          make O=out j7popltespr_defconfig 2>&1 | tee ci-results/configure.log
+          grep -qx 'CONFIG_SEC_J7POPLTE_USA_SPR=y' out/.config
+          grep -qx 'CONFIG_MSMB_CAMERA=y' out/.config
+          grep -qx 'CONFIG_ZRAM=y' out/.config
+          grep -qx 'CONFIG_ZSWAP=y' out/.config
+          grep -q 'J727P_CAMCLK_GET_FAIL' drivers/media/platform/msm/camera_v2_j7poplte/common/msm_camera_io_util.c
+          grep -q 'J727P_CSID_CLOCK_FAIL' drivers/media/platform/msm/camera_v2_j7poplte/sensor/csid/msm_csid.c
+          cp out/.config ci-results/kernel.config
+          make O=out -j2 Image.gz-dtb 2>&1 | tee ci-results/build.log
+          cp out/arch/arm64/boot/Image.gz-dtb ci-results/Image.gz-dtb
+          (cd ci-results && sha256sum Image.gz-dtb > SHA256SUMS)
+
+      - name: Publish build output and logs (no boot image or flashing)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: j727p-camera-clock-errno-${{ github.run_number }}
+          path: ci-results/
+          if-no-files-found: warn
+          retention-days: 14
