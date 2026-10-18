@@ -1,9 +1,10 @@
-name: J727P camera clock errno diagnostic
+name: J727P CSID per-device camera clock repair build
 
 on:
   push:
     branches:
       - j727p-camera-clock-errno-diagnostic
+      - j727p-camera-csid-per-device-clocks
   workflow_dispatch:
 
 permissions:
@@ -49,6 +50,8 @@ jobs:
           grep -qx 'CONFIG_ZSWAP=y' out/.config
           grep -q 'J727P_CAMCLK_GET_FAIL' drivers/media/platform/msm/camera_v2_j7poplte/common/msm_camera_io_util.c
           grep -q 'J727P_CSID_CLOCK_FAIL' drivers/media/platform/msm/camera_v2_j7poplte/sensor/csid/msm_csid.c
+          grep -q 'struct msm_cam_clk_info csid_clk_info' drivers/media/platform/msm/camera_v2_j7poplte/sensor/csid/msm_csid.h
+          ! grep -q '^static struct msm_cam_clk_info csid_clk_info' drivers/media/platform/msm/camera_v2_j7poplte/sensor/csid/msm_csid.c
           cp out/.config ci-results/kernel.config
           make O=out -j2 Image.gz-dtb 2>&1 | tee ci-results/build.log
           cp out/arch/arm64/boot/Image.gz-dtb ci-results/Image.gz-dtb
