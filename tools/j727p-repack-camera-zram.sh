@@ -17,8 +17,26 @@ hash() { sha256sum "$1" | cut -d ' ' -f 1; }
 
 [ "$(id -u)" = 0 ] || die "Run with su -c."
 [ -f "$ART" ] || die "Pass path to downloaded j727p-zram-camera-v2-3.zip"
-[ -f "$BASE" ] && [ "$(wc -c < "$BASE")" -eq 33554432 ] || die "Known-good 32 MiB camera boot backup missing"
-[ "$(hash "$BASE")" = "$BASE_SHA" ] || die "Camera boot backup checksum mismatch"
+# Accept only the exact, previously verified camera-v2 boot image.
+# A mismatched backup is never modified, replaced, or used as a fallback.
+BASE=""
+for CANDIDATE in \
+ /sdcard/Download/J727P-pre-zram-boot.img \
+ /data/local/tmp/j727p-v2-repack-19639/new-boot.img
+do
+ [ -f "$CANDIDATE" ] || continue
+ ACTUAL="$(hash "$CANDIDATE")" || die "Cannot hash $CANDIDATE"
+ SIZE="$(wc -c < "$CANDIDATE")" || die "Cannot check size: $CANDIDATE"
+ if [ "$ACTUAL" = "$BASE_SHA" ] && [ "$SIZE" -eq 33554432 ]; then
+  BASE="$CANDIDATE"
+  echo "Verified known-good camera boot: $BASE"
+  break
+ else
+  echo "Skipping mismatched backup (NOT modified): $CANDIDATE"
+  echo " Actual SHA256: $ACTUAL, size: $SIZE"
+ fi
+done
+[ -n "$BASE" ] || die "No camera-v2 boot backup matched the pinned SHA256; no changes made"
 [ -x "$M" ] || die "MagiskBoot not executable: $M"
 [ -x "$UNZIP" ] || die "Install unzip in Termux: pkg install unzip"
 [ ! -e "$OUT" ] || die "Output already exists. Refusing to overwrite $OUT"
