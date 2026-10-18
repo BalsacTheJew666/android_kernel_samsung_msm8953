@@ -553,8 +553,8 @@ static int msm_csid_init(struct csid_device *csid_dev, uint32_t *csid_version)
 			csid_clk_info, csid_dev->csid_clk,
 			csid_dev->num_clk, 1);
 	if (rc < 0) {
-		pr_err("%s:%d clock enable failed\n",
-			 __func__, __LINE__);
+		pr_err("J727P_CSID_CLOCK_FAIL: %s:%d errno=%d\n",
+			 __func__, __LINE__, rc);
 		goto clk_enable_failed;
 	}
 	CDBG("%s:%d called\n", __func__, __LINE__);
